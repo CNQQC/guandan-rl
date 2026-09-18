@@ -1,5 +1,7 @@
 import copy
+import json
 import random
+import time
 
 import numpy as np
 import pytest
@@ -211,3 +213,65 @@ def test_config_rejects_inconsistent_pool_and_gate():
         TrainConfig(gate_threshold=1.0).validate()
     with pytest.raises(ValueError):
         TrainConfig(pool_archive_every=0).validate()
+
+
+def _last_iteration(path):
+    lines = path.read_text().splitlines() if path.is_file() else []
+    return json.loads(lines[-1])['iteration'] if lines else 0
+
+
+def test_pause_holds_the_same_process_and_resume_is_not_a_restart(tmp_path):
+    """A pause is not a stop and not --resume: no reload, no reset, no restart."""
+    import threading
+    metrics, seen = tmp_path / 'metrics.jsonl', {}
+
+    def wait_for(predicate, limit=30.0):
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(.02)
+        return False
+
+    def choreograph():
+        # signal.signal() only works on the main thread, so the trainer runs
+        # there and the pause is driven from here.
+        seen['started'] = wait_for(lambda: _last_iteration(metrics) >= 2)
+        (tmp_path / 'PAUSE').touch()
+        seen['reported'] = wait_for(
+            lambda: json.loads((tmp_path / 'status.json').read_text()).get('status') == 'paused')
+        seen['at_pause'] = _last_iteration(metrics)
+        time.sleep(1.0)
+        seen['after_waiting'] = _last_iteration(metrics)
+        (tmp_path / 'PAUSE').unlink()
+        seen['resumed'] = wait_for(lambda: _last_iteration(metrics) > seen['after_waiting'])
+        (tmp_path / 'STOP').touch()
+
+    cfg = TrainConfig(iterations=100_000, games_per_iteration=2, workers=1, batch_size=4,
+                      updates=1, replay_size=256, eval_every=10**6, max_minutes=0,
+                      threads=1, device='cpu', save_every=10**6)
+    driver = threading.Thread(target=choreograph, daemon=True)
+    driver.start()
+    wall = time.monotonic()
+    meta = train(cfg, tmp_path)
+    wall = time.monotonic() - wall
+    driver.join(timeout=30)
+
+    assert seen['started'] and seen['reported'] and seen['resumed']
+    # Nothing was collected or learned while the marker was up.
+    assert seen['at_pause'] == seen['after_waiting']
+    # And the counter carried straight on rather than starting over.
+    assert meta['iteration'] > seen['after_waiting'] >= 2
+    rows = [json.loads(line) for line in metrics.read_text().splitlines()]
+    assert [r['iteration'] for r in rows] == list(range(1, meta['iteration']+1))
+    # Paused time is not training time, so it must not spend the budget.
+    assert json.loads((tmp_path / 'status.json').read_text())['elapsed_seconds'] <= wall - .9
+
+
+def test_a_stale_pause_marker_does_not_hang_the_next_run(tmp_path):
+    """Unlike STOP, a pause is runtime state and never outlives its process."""
+    (tmp_path / 'PAUSE').touch()
+    cfg = TrainConfig(iterations=2, games_per_iteration=2, workers=1, batch_size=4, updates=1,
+                      replay_size=256, eval_every=10**6, max_minutes=0, threads=1, device='cpu')
+    assert train(cfg, tmp_path)['iteration'] == 2
+    assert not (tmp_path / 'PAUSE').exists()

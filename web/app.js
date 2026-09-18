@@ -229,8 +229,17 @@ const SERIES = {self:{label:'自我对弈',color:'#8a6a00'}, snapshot:{label:'�
 // Slot order keeps every adjacent pair separable, in this chart and in the mix bar.
 const SLOTS = ['self','snapshot','team-rule','program:njupt','program:egg-pancake','champion','rule','random'];
 const STATUS = {running:['训练中','running'], completed:['已完成','done'], budget_reached:['时间预算已到','paused'],
-  stopped:['已保存并停止','paused'], failed:['训练出错','failed']};
+  stopped:['已保存并停止','paused'], paused:['已暂停','paused'], failed:['训练出错','failed']};
 const view = {smooth:true, log:false, table:false, window:0, hovering:false, elapsed:null, stamp:null};
+// For the run the console is driving, the PAUSE marker is the live signal;
+// status.json is the trainer's last write and lands an iteration behind a
+// resume, which would otherwise read as "已暂停" for another poll.
+function runState(run) {
+  const reported = run.status?.status;
+  if (overview?.managed_run !== run.name) return reported;
+  if (overview.managed_paused) return 'paused';
+  return reported === 'paused' ? 'running' : reported;
+}
 const seriesOf = key => SERIES[key] || {label:key, color:'#5c6b60'};
 const slotRank = key => (SLOTS.indexOf(key)+1) || 99;
 const fixed = (x, n=3) => typeof x === 'number' && isFinite(x) ? x.toFixed(n) : '—';
@@ -485,7 +494,7 @@ function renderMix(rows) {
 
 function renderIndicators(run) {
   const status = run.status || {}, cfg = run.training || {}, last = lossRow(run), previous = (run.metrics || []).at(-2);
-  const [label, kind] = STATUS[status.status] || ['正在初始化', 'idle'];
+  const [label, kind] = STATUS[runState(run)] || ['正在初始化', 'idle'];
   $('run-state').className = 'run-state ' + kind;
   $('run-status').textContent = label + (overview.managed_run === run.name ? ' · 网页任务' : '');
   const iterSeconds = previous ? last.elapsed_seconds-previous.elapsed_seconds : null;
@@ -622,7 +631,7 @@ async function refresh() {
     $('runtime').textContent = `${overview.system.platform.startsWith('macOS') ? 'APPLE SILICON' : 'LOCAL'} / ${overview.system.default_device.toUpperCase()} / ${overview.system.memory_gb} GB`;
     $('expert-link').hidden = !overview.expert_available;
     const option = r => {
-      const state = (STATUS[r.status?.status] || ['—'])[0];
+      const state = (STATUS[runState(r)] || ['—'])[0];
       const iteration = r.status?.iteration;
       return `<option value="${escapeHTML(r.name)}">${escapeHTML(runName(r))}`
         + `${iteration ? ' · ' + iteration + ' 迭代' : ''} · ${escapeHTML(state)}</option>`;
@@ -637,6 +646,9 @@ async function refresh() {
     $('start-training').disabled = overview.managed_training || !setupValid;
     renderProfileOptions();
     $('stop-training').disabled = !overview.managed_training;
+    $('pause-training').disabled = !overview.managed_training;
+    $('pause-training').textContent = overview.managed_paused ? '继续训练' : '暂停';
+    $('pause-training').classList.toggle('primary', Boolean(overview.managed_paused));
     renderTraining();
     const run = overview.runs.find(r => r.name === $('run-picker').value) || overview.runs[0];
     if (run) refreshLog(run);
@@ -1148,4 +1160,8 @@ async function startTraining() {
 }
 $('start-training').onclick = startTraining;
 $('stop-training').onclick=async()=>{try{await api('/api/train/stop',{});toast('将在当前迭代完成后保存并停止');}catch(e){toast(e.message);}};
+$('pause-training').onclick=async()=>{const paused=!overview?.managed_paused;
+  try{await api('/api/train/pause',{paused});
+    toast(paused?'已暂停：进程、优化器和回放都留在内存里，暂停时长不计入时间预算':'已继续，接着上一次迭代往下跑');
+    await refresh();}catch(e){toast(e.message);}};
 enhanceSelects();loadOptions();refresh();refreshEvaluation();setInterval(refresh,5000);setInterval(refreshEvaluation,5000);

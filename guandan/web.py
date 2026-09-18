@@ -161,6 +161,12 @@ class TrainRequest(BaseModel):
     overrides: TrainOverrides = TrainOverrides()
 
 
+class TrainPause(BaseModel):
+    """Desired state, not a toggle, so a double click cannot invert the run."""
+    model_config = ConfigDict(extra="forbid")
+    paused: bool = True
+
+
 class RunLabel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str = Field(default="", max_length=40)
@@ -499,10 +505,11 @@ def create_app():
             report = read_json(path, {})
             if isinstance(report, dict):
                 reports.append({"name": path.name, **{k: v for k, v in report.items() if k != "records"}})
-        proc = training["process"]
+        proc, managed = training["process"], training["out"]
         live = bool(proc and proc.poll() is None)
         return dict(system=system_info(), expert_available=available(), runs=runs, reports=reports,
-                    managed_training=live, managed_run=training["out"].name if live and training["out"] else None,
+                    managed_training=live, managed_run=managed.name if live and managed else None,
+                    managed_paused=bool(live and managed and (managed / "PAUSE").is_file()),
                     server_time=time.time())
 
     @app.put("/api/run/{name}/label")
@@ -758,6 +765,27 @@ def create_app():
                 raise HTTPException(409, "没有正在运行的评测。")
             proc.terminate()
             return {"status": "terminated"}
+
+    @app.post("/api/train/pause")
+    def pause_training(req: TrainPause):
+        """Hold the trainer in place, or let it go again.
+
+        This is not "继续训练": that starts a NEW process from `latest.pt`.
+        A pause leaves the running process up with its model, optimizer,
+        replay and RNG in memory, so continuing costs nothing and loses
+        nothing -- not even the iteration counter. Paused time does not
+        count against `max_minutes`.
+        """
+        with process_lock:
+            proc, directory = training["process"], training["out"]
+            if proc is None or proc.poll() is not None:
+                raise HTTPException(409, "没有由控制台启动的活动训练。")
+            marker = directory / "PAUSE"
+            if req.paused:
+                marker.touch()
+            else:
+                marker.unlink(missing_ok=True)
+            return {"status": "paused" if req.paused else "running"}
 
     @app.post("/api/train/stop")
     def stop_training():

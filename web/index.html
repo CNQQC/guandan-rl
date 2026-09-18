@@ -33,7 +33,7 @@
       </div>
     </section>
     <section id="train" class="tab">
-      <div class="section-top"><div><span class="eyebrow">SELF-PLAY / 02</span><h1>与程序策略博弈学习</h1><p>强化学习模型对抗南邮、蛋饼等程序策略，并混合历史模型自我对弈。</p></div><div class="train-actions"><label class="field-inline">基础配置 <select id="profile"></select></label><label class="field-inline">时长 <input id="max-minutes" type="number" min="0" step="1" value="30"><small>分钟</small></label><button id="toggle-setup" aria-expanded="false">训练参数</button><button class="primary" id="start-training">开始训练</button><button id="stop-training" disabled>保存并停止</button></div></div>
+      <div class="section-top"><div><span class="eyebrow">SELF-PLAY / 02</span><h1>与程序策略博弈学习</h1><p>强化学习模型对抗南邮、蛋饼等程序策略，并混合历史模型自我对弈。</p></div><div class="train-actions"><label class="field-inline">基础配置 <select id="profile"></select></label><label class="field-inline">时长 <input id="max-minutes" type="number" min="0" step="1" value="30"><small>分钟</small></label><button id="toggle-setup" aria-expanded="false">训练参数</button><button class="primary" id="start-training">开始训练</button><button id="pause-training" disabled>暂停</button><button id="stop-training" disabled>保存并停止</button></div></div>
       <details class="panel setup" id="train-setup">
         <summary><b>训练参数</b><span id="setup-summary">基于 configs/league.toml</span></summary>
         <div id="setup-fields"></div>

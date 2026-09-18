@@ -291,6 +291,7 @@ def _train_locked(cfg, out, resume):
         pool = ["pool/initial.pt"]
     atomic_json(out / "config.json", dict(training=asdict(cfg), network=model.cfg.to_dict(),
                                          system=system_info(), encoding=ENCODING_VERSION))
+    (out / "PAUSE").unlink(missing_ok=True)
     requested_stop = False
     old_handlers = {}
 
@@ -301,6 +302,33 @@ def _train_locked(cfg, out, resume):
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         old_handlers[sig] = signal.signal(sig, request_stop)
+    def paused_for():
+        """Block while a PAUSE marker exists; return the seconds spent waiting.
+
+        Pausing is not stopping and it is not --resume. The process stays up
+        with model, optimizer, replay and RNG untouched in memory, so lifting
+        the marker continues the very same run -- nothing is reloaded, nothing
+        is reset, and the iteration counter picks up where it left off.
+        """
+        if not (out / "PAUSE").exists():
+            return 0.0
+        began = time.monotonic()
+        atomic_json(out / "status.json", dict(status="paused", device=device, **meta,
+                                              elapsed_seconds=began-start,
+                                              paused_at=datetime.now(timezone.utc).isoformat()))
+        print("已暂停。删除 PAUSE 文件或在网页点「继续训练」即可原地恢复。", flush=True)
+        while (out / "PAUSE").exists() and not requested_stop and not (out / "STOP").exists():
+            time.sleep(.25)
+        waited = time.monotonic() - began
+        if not requested_stop and not (out / "STOP").exists():
+            # Say so at once: the loop would not write "running" until the
+            # next iteration finishes, and a watcher should not read a
+            # resumed run as still paused for that long.
+            atomic_json(out / "status.json", dict(status="running", device=device, **meta,
+                                                  elapsed_seconds=began-start))
+            print(f"已恢复训练（暂停 {waited:.0f} 秒，不计入时间预算）。", flush=True)
+        return waited
+
     best_iteration, best_win = _best_evaluated(out)
     probe = None          # fixed diagnostic states, built at the first evaluation
     start, session_games = time.monotonic(), 0
@@ -346,6 +374,7 @@ def _train_locked(cfg, out, resume):
         # --iterations is the number of ADDITIONAL iterations on resume.
         target = meta["iteration"] + cfg.iterations
         while meta["iteration"] < target:
+            start += paused_for()       # paused time is not training time
             if requested_stop or (out / "STOP").exists():
                 status = "stopped"
                 break
