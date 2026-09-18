@@ -51,6 +51,9 @@ class TrainConfig:
     belief_weight: float = 0.05
     pool_fraction: float = 0.5
     pool_size: int = 8
+    pool_recent: int = 4            # newest snapshots the pool always keeps
+    pool_archive_every: int = 200   # minimum iteration gap between older ones
+    gate_threshold: float = 0.5     # champion promotion, on paired-deal win rate
     snapshot_every: int = 10
     eval_every: int = 10
     eval_pairs: int = 12
@@ -70,12 +73,17 @@ class TrainConfig:
 
     def validate(self):
         for name in ("iterations", "games_per_iteration", "workers", "batch_size", "updates",
-                     "replay_size", "pool_size", "snapshot_every", "eval_every", "eval_pairs",
-                     "threads", "actor_timeout_seconds", "save_every"):
+                     "replay_size", "pool_size", "pool_recent", "pool_archive_every",
+                     "snapshot_every", "eval_every", "eval_pairs", "threads",
+                     "actor_timeout_seconds", "save_every"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be >= 1")
         if self.workers > self.games_per_iteration:
             raise ValueError("workers cannot exceed games_per_iteration")
+        if self.pool_recent > self.pool_size:
+            raise ValueError("pool_recent cannot exceed pool_size")
+        if not 0 < self.gate_threshold < 1:
+            raise ValueError("gate_threshold must lie strictly between 0 and 1")
         if not 0 <= self.pool_fraction <= 1 or not 0 <= self.epsilon_final <= self.epsilon <= 1:
             raise ValueError("invalid probability or epsilon schedule")
         if self.learning_rate <= 0 or self.max_minutes < 0:
@@ -180,6 +188,37 @@ def _best_evaluated(out):
         if isinstance(report.get("win_rate"), (int, float)) and report["win_rate"] > rate:
             best, rate = report.get("iteration"), float(report["win_rate"])
     return best, rate
+
+
+def _pool_iteration(name):
+    """Iteration encoded in a pool filename; None for the random-init entry."""
+    match = re.search(r"iteration-(\d+)\.pt$", name)
+    return int(match.group(1)) if match else None
+
+
+def _update_pool(pool, name, cfg):
+    """Recent snapshots, plus a thinned archive of the older ones.
+
+    A pool holding only the last few checkpoints lets the policy cycle: it
+    beats the selves it just came from while losing to what it was a thousand
+    iterations ago. Older entries are kept at `pool_archive_every` spacing
+    instead, so the pool reaches back about
+    (pool_size - pool_recent) * pool_archive_every iterations at bounded size.
+    The random-init reference drops out as soon as real snapshots exist --
+    games against it stop being informative long before it would age out.
+    """
+    pool = pool + [name]
+    recent, older = pool[-cfg.pool_recent:], pool[:-cfg.pool_recent]
+    archive = []
+    for path in older:
+        iteration = _pool_iteration(path)
+        if iteration is None:
+            continue
+        previous = _pool_iteration(archive[-1]) if archive else None
+        if previous is None or iteration - previous >= cfg.pool_archive_every:
+            archive.append(path)
+    room = max(0, cfg.pool_size - len(recent))
+    return (archive[-room:] if room else []) + recent
 
 
 def _prune_pool(out, pool, keep_iteration=None):
@@ -377,7 +416,7 @@ def _train_locked(cfg, out, resume):
             if iteration % cfg.snapshot_every == 0:
                 name = f"pool/iteration-{iteration:06}.pt"
                 _snapshot(out / name, model, iteration)
-                pool = (pool + [name])[-cfg.pool_size:]
+                pool = _update_pool(pool, name, cfg)
                 # Keep the active opponent pool and the best-scoring snapshot only.
                 dropped = _prune_pool(out, pool, best_iteration)
                 if dropped:
@@ -426,7 +465,11 @@ def _train_locked(cfg, out, resume):
                     gate = run_evaluation(candidate, champion, cfg.eval_pairs, cfg.eval_seed+1)
                     gate.update(iteration=iteration, split="development", opponent="champion")
                     atomic_json(out / f"gate-{iteration:06}.json", gate)
-                    promoted = gate["ci95"][0] > .5
+                    # An interval gate freezes the champion: over 40 games
+                    # ci95[0] only clears 0.5 at a ~72% win rate, so a candidate
+                    # that is genuinely a few points better never promotes.
+                    # Promote on the point estimate; eval_pairs sets its noise.
+                    promoted = gate["win_rate"] > cfg.gate_threshold
                     if promoted:
                         _snapshot(best, model, iteration)
                 print(f"开发集对 team-rule 胜率 {evaluation['win_rate']:.1%} · 晋级 {promoted}", flush=True)

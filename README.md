@@ -64,7 +64,8 @@ uv run python -m guandan train --config configs/league.toml --out runs/league
 # 先验证完整管线，约几秒
 uv run python -m guandan train --config configs/smoke.toml --out runs/my-smoke
 
-# Mac：CPU learner + 4 个采样进程，采样与学习并行，默认最多 30 分钟或 200 次迭代
+# Mac：CPU learner + 4 个采样进程，采样与学习并行，默认最多 8 小时
+# 结束训练的一直是 max_minutes 而不是 iterations——后者被有意设得够大
 uv run python -m guandan train --config configs/mac.toml --out runs/mac
 
 # 继续已交付的模型；iterations 指本次额外迭代次数
@@ -90,7 +91,7 @@ macOS 普通终端可以使用 MPS；某些应用沙箱会让 PyTorch 报告 MPS
 | --- | --- |
 | `bucket_batches` | 每个批次从「按 token 长度排序后的回放缓冲」里取一段连续窗口。牌局历史长度差异很大（中位 214、最长 490），随机批要 padding 到批内最长，**约 58% 的 Transformer 算力花在 PAD 上**；等长分桶把这部分基本消掉。窗口跨尾部回绕，所以每条样本被抽中的边际概率仍然严格均匀，只有「批次如何分组」变了。 |
 | `pipeline` | 下一轮采样在本轮梯度更新**之前**派发，actor 在 learner 计算期间继续打牌。代价是 actor 的权重晚一轮，这是 actor-learner 架构的常规取舍。仅在 `workers > 1` 时生效。 |
-| `save_every` | 完整检查点（含 16 MB 经验回放）的写盘间隔。`Ctrl+C`、`STOP`、预算到期和正常结束都一定会写完整检查点；只有被 `kill -9` 强杀时才最多丢失 `save_every` 轮，此时 `metrics.jsonl` 会比 `latest.pt` 多出几行，续训后这几个迭代号会在日志里重复出现。 |
+| `save_every` | 完整检查点（含经验回放）的写盘间隔；体积随 `replay_size` 走，8192 条约 16 MB、131072 条约 220 MB，后者写一次约 1.8 秒。`Ctrl+C`、`STOP`、预算到期和正常结束都一定会写完整检查点；只有被 `kill -9` 强杀时才最多丢失 `save_every` 轮，此时 `metrics.jsonl` 会比 `latest.pt` 多出几行，续训后这几个迭代号会在日志里重复出现。 |
 
 在 M3 Pro（12 核）上按相同墙钟时间实测，相对改动前的 `configs/mac.toml`：
 
@@ -112,9 +113,9 @@ macOS 普通终端可以使用 MPS；某些应用沙箱会让 PyTorch 报告 MPS
 - **DMC（Deep Monte Carlo）**：用完整一副牌的团队收益训练 `Q(观察, 合法动作)`，头二游同队 `+3`，头三游同队 `+2`，头末游同队 `+1`；另一队取负值，训练时除以 3。
 - **小型因果 Transformer + 手牌/动作网络**：只读取自己的手牌、公开历史、剩余张数等可见信息。花色信息进入特征，能够区分保留不同花色的选择。
 - **辅助学习**：下一事件 token 预测，以及其他三家手牌点数分布预测。真实隐藏手牌只用于训练标签，决策输入不包含它们。
-- **历史对手池**：纯自我对弈、团队规则对手、冻结的历史检查点混合；仅将学习方的动作写入其训练数据。
+- **历史对手池**：纯自我对弈、团队规则对手、冻结的历史检查点混合；仅将学习方的动作写入其训练数据。对手池保留最近 `pool_recent` 个快照，更早的按至少 `pool_archive_every` 次迭代的间隔稀疏归档，因此回溯范围约 `(pool_size - pool_recent) × pool_archive_every` 次迭代——只留最近几个快照会让策略打得过刚才的自己、打不过几百次迭代前的自己，从而在原地绕圈。
 - **全面探索**：epsilon 探索覆盖全部枚举动作，不把模型永久限制在当前 top-k 以内。
-- **晋级评测**：定期对 `team-rule` 和当前 champion 做同牌换队开发集评测；冠军晋级要求区间下界超过 50%。第一个 champion 仅为初始参照，不代表已达到任何棋力门槛。
+- **晋级评测**：定期对 `team-rule` 和当前 champion 做同牌换队开发集评测；冠军晋级要求胜率超过 `gate_threshold`（默认 50%）。早先的判据是置信区间下界超过 50%，但 40 局的下界要到约 72% 胜率才越得过去，冠军因此会卡在半程；要降低这个判断的噪声，该调的是 `eval_pairs` 而不是门槛。第一个 champion 仅为初始参照，不代表已达到任何棋力门槛。
 
 这是 CPU actor + 单 learner 的可读实现（默认采样与学习流水线并行，见上文「吞吐量」）；CUDA 能加速学习，但 CPU 规则枚举和推理会限制吞吐量。大规模训练应进一步实现集中批量推理、原生规则内核，并做吞吐量与棋力消融实验。没有声称 GPU 配置已达工业规模。
 

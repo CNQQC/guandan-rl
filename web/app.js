@@ -453,7 +453,9 @@ function renderEvaluation(run) {
     bands.push({color: seriesOf(key).color,
                 points: points.filter(r => r.ci95).map(r => ({x: r.iteration, lo: r.ci95[0], hi: r.ci95[1]}))});
   }
-  const promotions = (groups.get('champion') || []).filter(r => r.ci95 && r.ci95[0] > .5);
+  const gateThreshold = run.training?.gate_threshold;
+  const promotions = (groups.get('champion') || []).filter(r => gateThreshold === undefined
+    ? (r.ci95 && r.ci95[0] > .5) : r.win_rate > gateThreshold);
   plotSpec($('plot-eval'), {label: '开发集胜率', series, bands, xLabel: '迭代', min: 0, max: 1,
     format: v => (v*100).toFixed(0)+'%', tableFormat: percent, log: false, tail: false,
     refs: [{y: .5, label: '50% 均势'}],
@@ -464,7 +466,8 @@ function renderEvaluation(run) {
     const r = latest(key);
     return `<span><b><i class="swatch" style="background:${seriesOf(key).color}"></i>对${escapeHTML(seriesOf(key).label)}</b>`
       + `<em>${percent(r.win_rate)}${r.ci95 ? ` (${percent(r.ci95[0])}–${percent(r.ci95[1])})` : ''} · ${r.games} 局</em></span>`;
-  }).join('') + (promotions.length ? `<span><b>▲ 晋级 ${promotions.length} 次</b><em>候选模型置信下界超过 50%</em></span>` : '');
+  }).join('') + (promotions.length ? `<span><b>▲ 晋级 ${promotions.length} 次</b><em>${gateThreshold === undefined
+      ? '候选模型置信下界超过 50%' : `候选模型对历史冠军胜率超过 ${percent(gateThreshold)}`}</em></span>` : '');
 }
 
 function renderMix(rows) {
@@ -521,7 +524,9 @@ function renderIndicators(run) {
     cfg.workers ? `${cfg.workers} 采样进程` : '', cfg.model_size ? `${cfg.model_size} 网络` : '',
     run.snapshots ? `${run.snapshots} 个历史快照` : '', megabytes(run.size),
     run.archived ? '已归档' : '', run.lock && !run.lock.alive ? '有残留训练锁' : '',
-    gate ? `晋级门槛：对历史冠军 ${percent(gate.win_rate)}` : (run.champion ? '已产生冠军' : '')].filter(Boolean);
+    gate ? `最近晋级赛：对历史冠军 ${percent(gate.win_rate)}`
+         + (cfg.gate_threshold === undefined ? '' : `（门槛 ${percent(cfg.gate_threshold)}）`)
+         : (run.champion ? '已产生冠军' : '')].filter(Boolean);
   $('run-facts').dataset.facts = facts.join(' · ');
 }
 
@@ -539,7 +544,8 @@ function renderConfiguration(run) {
     ['批量大小', cfg.batch_size ?? '—'], ['学习率', cfg.learning_rate ?? '—'],
     ['回放容量', number(cfg.replay_size)], ['ε 起点 / 下限', cfg.epsilon !== undefined ? `${cfg.epsilon} / ${cfg.epsilon_final}` : '—'],
     ['NTP / 信念权重', cfg.ntp_weight !== undefined ? `${cfg.ntp_weight} / ${cfg.belief_weight}` : '—'],
-    ['历史模型池', cfg.pool_size !== undefined ? `${cfg.pool_size} 个 · 混合 ${percent(cfg.pool_fraction)}` : '—'],
+    ['历史模型池', cfg.pool_size === undefined ? '—'
+      : `${cfg.pool_size} 个${cfg.pool_recent === undefined ? '' : `（近 ${cfg.pool_recent} + 历史每 ${cfg.pool_archive_every}）`} · 混合 ${percent(cfg.pool_fraction)}`],
     ['评测节奏', cfg.eval_every !== undefined ? `每 ${cfg.eval_every} 次 · ${cfg.eval_pairs} 对` : '—'],
     ['规则对手', (cfg.rule_opponents || []).map(k => seriesOf(k).label).join('、') || '—'],
     ['随机种子', cfg.seed ?? '—'], ['检查点', `${run.snapshots || 0} 个快照 · 冠军${run.champion ? '已产生' : '未产生'}`]];
@@ -1012,8 +1018,9 @@ const FIELD_GROUPS = [
     ['model_size','网络规模',{options:['small','full']}], ['bucket_batches','等长分桶',{options:['true','false']}]]],
   ['探索、对手池与评测', [['epsilon','ε 起点',{step:.01,min:0,max:1}], ['epsilon_final','ε 下限',{step:.01,min:0,max:1}],
     ['pool_fraction','历史模型比例',{step:.05,min:0,max:1}], ['pool_size','历史模型数量',{step:1,min:1}],
+    ['pool_recent','其中最近快照',{step:1,min:1}], ['pool_archive_every','历史快照间隔',{step:25,min:1}],
     ['snapshot_every','快照间隔',{step:1,min:1}], ['eval_every','评测间隔',{step:1,min:1}],
-    ['eval_pairs','评测对数',{step:1,min:1}]]],
+    ['eval_pairs','评测对数',{step:1,min:1}], ['gate_threshold','晋级胜率门槛',{step:.01,min:.01,max:.99}]]],
 ];
 let options = null, setupValid = true, previewTimer = null, profileSignature = '';
 

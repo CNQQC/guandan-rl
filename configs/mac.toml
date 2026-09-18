@@ -2,30 +2,45 @@
 # not the actors: with bucketed batches 4 sampling processes already stay ahead
 # of it, so the remaining cores go to learner threads. MPS is SLOWER than CPU
 # for the `small` network -- kernel launch overhead dominates a model this size.
+#
+# This profile is for LONG runs. What ends a run is `max_minutes`, never
+# `iterations`. A 30-minute budget buys ~11k games / 350k transitions, which
+# lands the policy at team-rule parity and no further -- DMC needs orders of
+# magnitude more than that. Give it hours, then --resume for more.
 [training]
-iterations = 200
+iterations = 100000         # deliberately non-binding; max_minutes ends the run
+max_minutes = 480
 games_per_iteration = 24
 workers = 4
+threads = 6
+device = "cpu"
+model_size = "small"        # `full` is 4.5M params and wants a GPU; see gpu.toml
+
 batch_size = 128
-updates = 16
-replay_size = 8192
+updates = 16                # 2048 draws against ~770 fresh samples per
+                            # iteration: each sample is learned from ~2.7 times
+replay_size = 131072        # ~4000 games, ~195 MB. At 8192 the buffer turned
+                            # over every 11 iterations, so every batch came out
+                            # of one narrow, highly correlated window of play.
 learning_rate = 0.0001
 epsilon = 0.10
 epsilon_final = 0.02
 ntp_weight = 0.02
 belief_weight = 0.05
+save_every = 100            # a full-replay checkpoint costs ~1.8s at this size
+
 pool_fraction = 0.5
 rule_opponents = ["team-rule", "program:njupt", "program:egg-pancake"]
-pool_size = 8
-snapshot_every = 10
-eval_every = 10
-eval_pairs = 12
-max_minutes = 30
-device = "cpu"
-model_size = "small"
-threads = 6
-bucket_batches = true
-pipeline = true
-save_every = 5
+snapshot_every = 25
+pool_size = 32
+pool_recent = 6             # plus 26 archived at 250 spacing, so the pool
+pool_archive_every = 250    # reaches ~6500 iterations back instead of 160
+
+eval_every = 500            # one eval cycle is ~67s, so ~6% of the wall clock
+eval_pairs = 150            # 300 games: CI half-width ~6pp instead of ~17pp
+gate_threshold = 0.5        # an interval gate froze the champion at half a run
+
 seed = 17
 eval_seed = 1000003
+bucket_batches = true
+pipeline = true

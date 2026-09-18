@@ -174,3 +174,40 @@ def test_save_every_still_leaves_a_complete_final_checkpoint(tmp_path):
     # the full replay and the real iteration count, or --resume would rewind.
     assert ck['meta']['iteration'] == meta['iteration'] == 3
     assert len(ck['replay']['tokens']) == min(meta['samples'], cfg.replay_size)
+
+
+def test_pool_keeps_history_instead_of_only_the_newest_snapshots():
+    from guandan.train import _pool_iteration, _update_pool
+    cfg = TrainConfig(pool_size=8, pool_recent=3, pool_archive_every=100, snapshot_every=20)
+    pool = ['pool/initial.pt']
+    for iteration in range(20, 1001, 20):
+        pool = _update_pool(pool, f'pool/iteration-{iteration:06}.pt', cfg)
+    kept = [_pool_iteration(name) for name in pool]
+    archive, recent = kept[:-cfg.pool_recent], kept[-cfg.pool_recent:]
+    assert len(pool) == len(set(pool)) <= cfg.pool_size
+    assert recent == [960, 980, 1000]
+    # Sliding the window alone would leave the pool spanning 860..1000; the
+    # archive has to reach far enough back that self-play cannot cycle.
+    assert archive == [520, 620, 720, 820, 920]
+    assert all(b - a >= cfg.pool_archive_every for a, b in zip(archive, archive[1:]))
+    # Games against the random-init reference stop being informative.
+    assert 'pool/initial.pt' not in pool
+
+
+def test_pool_never_exceeds_its_cap_on_degenerate_settings():
+    from guandan.train import _update_pool
+    for recent, size in ((8, 8), (1, 1), (2, 3)):
+        cfg = TrainConfig(pool_size=size, pool_recent=recent, pool_archive_every=50)
+        pool = ['pool/initial.pt']
+        for iteration in range(20, 601, 20):
+            pool = _update_pool(pool, f'pool/iteration-{iteration:06}.pt', cfg)
+        assert len(pool) == len(set(pool)) <= size
+
+
+def test_config_rejects_inconsistent_pool_and_gate():
+    with pytest.raises(ValueError):
+        TrainConfig(pool_size=4, pool_recent=8).validate()
+    with pytest.raises(ValueError):
+        TrainConfig(gate_threshold=1.0).validate()
+    with pytest.raises(ValueError):
+        TrainConfig(pool_archive_every=0).validate()
