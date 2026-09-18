@@ -1,0 +1,26 @@
+# Install the PyTorch CUDA build appropriate for the GPU before use.
+# This profile is provided for migration; it has not been benchmarked on GPU.
+[training]
+iterations = 100000
+games_per_iteration = 64
+workers = 8
+batch_size = 256
+updates = 32
+replay_size = 65536
+learning_rate = 0.0001
+epsilon = 0.10
+epsilon_final = 0.02
+ntp_weight = 0.02
+belief_weight = 0.05
+pool_fraction = 0.5
+rule_opponents = ["team-rule", "program:njupt", "program:egg-pancake"]
+pool_size = 16
+snapshot_every = 20
+eval_every = 50
+eval_pairs = 100
+max_minutes = 720
+device = "cuda"
+model_size = "full"
+threads = 4
+seed = 17
+eval_seed = 1000003

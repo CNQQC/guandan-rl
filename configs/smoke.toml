@@ -1,0 +1,14 @@
+[training]
+iterations = 2
+games_per_iteration = 2
+workers = 1
+batch_size = 8
+updates = 2
+replay_size = 1024
+eval_every = 100
+eval_pairs = 2
+snapshot_every = 2
+max_minutes = 5
+device = "cpu"
+model_size = "small"
+threads = 2

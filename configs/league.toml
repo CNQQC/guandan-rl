@@ -1,0 +1,20 @@
+# Train directly against source-only competition strategies and frozen models.
+[training]
+iterations = 1000
+games_per_iteration = 12
+workers = 2
+batch_size = 32
+updates = 12
+replay_size = 8192
+pool_fraction = 0.8
+rule_opponents = ["program:njupt", "program:egg-pancake", "team-rule"]
+pool_size = 8
+snapshot_every = 20
+eval_every = 20
+eval_pairs = 20
+max_minutes = 30
+device = "auto"
+model_size = "small"
+threads = 2
+seed = 17
+eval_seed = 1000003

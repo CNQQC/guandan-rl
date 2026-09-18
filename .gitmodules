@@ -1,0 +1,6 @@
+[submodule "vendor/FableDan"]
+	path = vendor/FableDan
+	url = https://github.com/lrx0716/FableDan.git
+[submodule "vendor/DanLM"]
+	path = vendor/DanLM
+	url = https://github.com/dashidhy/DanLM.git

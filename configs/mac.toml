@@ -1,0 +1,24 @@
+[training]
+iterations = 200
+games_per_iteration = 8
+workers = 2
+batch_size = 32
+updates = 8
+replay_size = 8192
+learning_rate = 0.0001
+epsilon = 0.10
+epsilon_final = 0.02
+ntp_weight = 0.02
+belief_weight = 0.05
+pool_fraction = 0.5
+rule_opponents = ["team-rule", "program:njupt", "program:egg-pancake"]
+pool_size = 8
+snapshot_every = 10
+eval_every = 10
+eval_pairs = 12
+max_minutes = 30
+device = "auto"
+model_size = "small"
+threads = 2
+seed = 17
+eval_seed = 1000003

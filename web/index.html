@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>掼蛋研究室 · GuanDan Lab</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">掼</span><span>掼蛋研究室<small>GUANDAN LAB</small></span></a>
+    <nav aria-label="主要导航"><button class="nav active" data-tab="play">对战</button><button class="nav" data-tab="train">训练</button><button class="nav" data-tab="eval">评测</button></nav>
+    <span class="runtime" id="runtime">连接本地环境…</span>
+  </header>
+  <main>
+    <section id="play" class="tab active">
+      <div class="section-top"><div><span class="eyebrow">PLAY / 01</span><h1>与 AI 组队对战</h1><p>你与对面搭档组队。其他玩家的手牌始终保密。</p></div><a class="text-link" id="expert-link" href="/expert/" target="_blank" rel="noopener" hidden>挑战公开预训练模型 ↗</a></div>
+      <div class="game-layout">
+        <div class="game-main">
+          <div class="toolbar"><label>对手 <select id="agent"><option value="team-rule">团队规则基线</option><option value="random">随机基线</option></select></label><label>级牌 <select id="level"><option value="1">2</option><option value="2">3</option><option value="3">4</option><option value="4">5</option><option value="5">6</option><option value="6">7</option><option value="7">8</option><option value="8">9</option><option value="9">10</option><option value="10">J</option><option value="11">Q</option><option value="12">K</option><option value="0">A</option></select></label><button id="new-game" class="primary">开始一局 ↗</button></div>
+          <div class="table" aria-label="掼蛋牌桌">
+            <div class="table-line"></div>
+            <div class="seat partner"><span class="avatar">友</span><strong>你的搭档</strong><span id="left-2">27 张</span><div id="move-2" class="played"></div></div>
+            <div class="seat west"><span class="avatar">西</span><strong>左侧对手</strong><span id="left-3">27 张</span><div id="move-3" class="played"></div></div>
+            <div class="seat east"><span class="avatar">东</span><strong>右侧对手</strong><span id="left-1">27 张</span><div id="move-1" class="played"></div></div>
+            <div class="table-center"><span class="table-emblem">掼</span><span id="table-status">准备开局</span><small id="round-label">四人 · 两副牌 · 团队协作</small></div>
+            <div class="self-play" id="move-0"></div>
+          </div>
+          <div class="hand-heading"><span>你的手牌 <strong id="hand-count">—</strong></span><span id="hand-caption">点击「开始一局」发牌</span></div>
+          <div class="hand" id="hand" aria-label="你的手牌"></div>
+          <div class="actionbar"><button id="hint" disabled>提示</button><button id="clear" disabled>取消选牌</button><button id="pass" disabled>过</button><span class="action-spacer"></span><select id="claim" aria-label="出牌牌型" hidden></select><button id="play-button" class="primary" disabled>出牌</button></div>
+        </div>
+        <aside class="inspector"><span class="eyebrow">ROUND LOG</span><h2>牌局记录</h2><div class="log" id="game-log"><p class="empty">开局后，公开出牌记录会显示在这里。</p></div><div class="inspector-note">本页使用本地训练引擎。<br>公开预训练模型在独立牌桌运行。</div></aside>
+      </div>
+    </section>
+    <section id="train" class="tab">
+      <div class="section-top"><div><span class="eyebrow">SELF-PLAY / 02</span><h1>与程序策略博弈学习</h1><p>强化学习模型对抗南邮、蛋饼等程序策略，并混合历史模型自我对弈。</p></div><div class="train-actions"><select id="minutes"><option value="5">5 分钟试训</option><option value="30">30 分钟训练</option></select><button class="primary" id="start-training">开始训练</button><button id="stop-training" disabled>保存并停止</button></div></div>
+      <div class="run-picker"><label>训练记录 <select id="run-picker"></select></label><span id="run-status">暂无记录</span></div>
+      <div class="metrics"><div><span>累计对局</span><strong id="metric-games">—</strong></div><div><span>训练样本</span><strong id="metric-samples">—</strong></div><div><span>更新次数</span><strong id="metric-updates">—</strong></div><div><span>运行设备</span><strong id="metric-device">—</strong></div></div>
+      <div class="chart-heading"><h2>训练损失</h2><span>损失下降不能直接证明棋力提升</span></div><div class="chart" id="chart"><p class="empty">完成一次训练后显示真实数据。</p></div>
+      <div class="training-detail"><div><h2>训练流程</h2><ol><li><span>01</span>采样完整四人对局</li><li><span>02</span>学习团队胜负与升级收益</li><li><span>03</span>保存模型、优化器和经验回放</li><li><span>04</span>同牌换队评测，与历史模型对照</li></ol></div><div><h2>继续已有训练</h2><p>在项目目录中运行；每次迭代完成后自动保存。</p><pre id="resume-command">uv run python -m guandan train --config configs/mac.toml --out runs/mac</pre><p class="muted">初始模型从零学习。公开 DanLM 权重独立保留，不会混作本地训练成果。</p></div></div>
+    </section>
+    <section id="eval" class="tab">
+      <div class="section-top"><div><span class="EYEbrow eyebrow">EVALUATION / 03</span><h1>模型对比评测</h1><p>胜率必须和对手、样本量、规则及评测方式一起看。</p></div><span class="unverified">真人水平 · 尚未验证</span></div>
+      <div class="report-list" id="report-list"><p class="empty">还没有评测报告。</p></div>
+      <div class="evaluation-note"><h2>达到目标的判据</h2><p>先在保留测试牌局上稳定击败多个规则与学习型对手，再组织固定规则的真人盲测。预先登记普通玩家范围和对局数，以同牌换队胜率及置信区间判断；不能用随机对手或少量胜局替代。</p><pre>uv run python -m guandan eval --a runs/mac/latest.pt --b team-rule --pairs 500</pre></div>
+    </section>
+  </main>
+  <footer><span>GUANDAN LAB <span class="dot">·</span> 本地运行</span><span>研究模型，持续验证。</span></footer>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

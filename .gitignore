@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+runs/
+reports/
+*.log
+.DS_Store
+
+# Local secrets and model artifacts
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pt
+*.pth
+*.onnx
+*.npz
+*.so
+*.dylib
+*.egg-info/
+build/
+dist/
