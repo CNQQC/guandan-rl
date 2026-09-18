@@ -85,3 +85,92 @@ def test_config_rejects_bad_probabilities():
         TrainConfig(epsilon=1.5).validate()
     with pytest.raises(ValueError):
         TrainConfig(workers=5, games_per_iteration=2).validate()
+
+
+def test_probe_states_are_fixed_and_are_real_snapshots():
+    from fabledan.combos import PASS
+    from guandan.diagnose import probe_states
+
+    def signature(states):
+        return [(s['player'], s['level'], len(s['hand']), len(s['events'])) for s in states]
+
+    first, second = probe_states(count=24), probe_states(count=24)
+    assert len(first) == 24 and signature(first) == signature(second)
+    for obs in first:
+        # Only states where deferring is a real choice qualify.
+        assert obs['lead_owner'] not in (None, (obs['player'] + 2) % 4)
+        assert any(m.type == PASS for m in obs['legal']) and any(m.type != PASS for m in obs['legal'])
+        # events is the engine's live list: an uncopied reference would leave every
+        # state holding the finished round, so the last play would not be the leader.
+        last_play = next(event for event in reversed(obs['events']) if event[0] == 'play')
+        assert last_play[1] == obs['lead_owner']
+
+
+def test_teamwork_probe_separates_team_aware_from_indifferent():
+    from guandan.diagnose import probe_states, teamwork_probe
+    states = probe_states(count=24)
+    aware = teamwork_probe(TeamRuleAgent().scores, states)
+    # A policy that never reads lead ownership scores both variants identically.
+    blind = teamwork_probe(lambda obs: np.arange(len(obs['legal']), dtype=np.float32), states)
+    assert aware['states'] == 24 and 0 <= aware['flip_rate'] <= 1
+    assert aware['flip_rate'] > .3 and aware['deference'] > 0
+    assert blind['flip_rate'] == 0 and blind['deference'] == 0
+
+
+def test_bucketed_batches_cut_padding_without_biasing_the_draw():
+    """Bucketing must only change batch GROUPING, never a sample's draw odds."""
+    from fabledan.train import Replay
+    replay = Replay(512, belief_dim=45)
+    lengths = [2 + (i * 37) % 480 for i in range(512)]
+    for i, length in enumerate(lengths):
+        replay.add(np.full(length, 3, dtype=np.int16), np.zeros(FEAT_DIM, dtype=np.float32),
+                   0.0, np.zeros(45, dtype=np.float32))
+    rng = np.random.default_rng(0)
+    waste = {}
+    for bucketed in (False, True):
+        rng = np.random.default_rng(0)
+        padded = used = 0
+        for _ in range(400):
+            tokens, L, _, _, _ = replay.sample(32, rng, bucketed)
+            padded += tokens.size
+            used += int(L.sum())
+        waste[bucketed] = 1 - used / padded
+    # Padding is what the bucket is for; the win is the ratio, not a constant.
+    assert waste[False] > .4 and waste[True] < waste[False] / 3
+
+    # Marginal uniformity: start is uniform over the buffer and the window
+    # wraps past the end, so every entry sits in exactly `bs` of the n windows.
+    # A non-wrapping window would starve the shortest and longest sequences.
+    order = replay.length_order()
+    counts = np.zeros(replay.n)
+    for start in range(replay.n):
+        counts[order[(start + np.arange(32)) % replay.n]] += 1
+    assert counts.min() == counts.max() == 32
+
+
+def test_pipelined_and_serial_training_agree_on_what_was_collected(tmp_path):
+    shared = dict(iterations=3, games_per_iteration=4, workers=2, batch_size=4, updates=2,
+                  replay_size=256, eval_every=999, snapshot_every=999, max_minutes=0,
+                  threads=1, device='cpu')
+    serial = train(TrainConfig(**shared, pipeline=False), tmp_path / 'serial')
+    piped = train(TrainConfig(**shared, pipeline=True), tmp_path / 'piped')
+    # Prefetched actors run on weights one iteration old, so the deals play out
+    # differently and the sample COUNT moves; the bookkeeping must not.
+    assert {k: v for k, v in serial.items() if k != 'samples'} \
+        == {k: v for k, v in piped.items() if k != 'samples'} \
+        == dict(iteration=3, games=12, updates=6)
+    assert .8 < piped['samples'] / serial['samples'] < 1.25
+    for name in ('serial', 'piped'):
+        assert (tmp_path / name / 'latest.pt').is_file() and not (tmp_path / name / '.train.lock').exists()
+
+
+def test_save_every_still_leaves_a_complete_final_checkpoint(tmp_path):
+    cfg = TrainConfig(iterations=3, games_per_iteration=2, workers=1, batch_size=4, updates=1,
+                      replay_size=256, eval_every=999, max_minutes=0, threads=1, device='cpu',
+                      save_every=10)
+    meta = train(cfg, tmp_path)
+    _, ck = load_model(tmp_path / 'latest.pt')
+    # save_every skipped every in-loop write; the exit path must still persist
+    # the full replay and the real iteration count, or --resume would rewind.
+    assert ck['meta']['iteration'] == meta['iteration'] == 3
+    assert len(ck['replay']['tokens']) == min(meta['samples'], cfg.replay_size)

@@ -1,9 +1,13 @@
+# Apple silicon (measured on M3 Pro, 12 cores). The learner is the bottleneck,
+# not the actors: with bucketed batches 4 sampling processes already stay ahead
+# of it, so the remaining cores go to learner threads. MPS is SLOWER than CPU
+# for the `small` network -- kernel launch overhead dominates a model this size.
 [training]
 iterations = 200
-games_per_iteration = 8
-workers = 2
-batch_size = 32
-updates = 8
+games_per_iteration = 24
+workers = 4
+batch_size = 128
+updates = 16
 replay_size = 8192
 learning_rate = 0.0001
 epsilon = 0.10
@@ -17,8 +21,11 @@ snapshot_every = 10
 eval_every = 10
 eval_pairs = 12
 max_minutes = 30
-device = "auto"
+device = "cpu"
 model_size = "small"
-threads = 2
+threads = 6
+bucket_batches = true
+pipeline = true
+save_every = 5
 seed = 17
 eval_seed = 1000003

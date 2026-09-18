@@ -104,6 +104,8 @@ class Replay:
         self.belief_dim = belief_dim
         if belief_dim:
             self.belief = np.zeros((capacity, belief_dim), dtype=np.float32)
+        self.lens = np.zeros(capacity, dtype=np.int32)
+        self._order = None
         self.n = 0
         self.ptr = 0
 
@@ -112,13 +114,31 @@ class Replay:
         self.toks[i] = toks
         self.feat[i] = feat
         self.targ[i] = targ
+        self.lens[i] = len(toks)
+        self._order = None
         if self.belief_dim and belief is not None:
             self.belief[i] = belief
         self.ptr = (self.ptr + 1) % self.capacity
         self.n = min(self.n + 1, self.capacity)
 
-    def sample(self, bs, rng):
-        idx = rng.integers(0, self.n, size=bs)
+    def length_order(self):
+        """Buffer indices sorted by token length; cached until the next add()."""
+        if self._order is None:
+            self._order = np.argsort(self.lens[:self.n], kind="stable")
+        return self._order
+
+    def sample(self, bs, rng, bucketed=False):
+        if bucketed and bs < self.n:
+            # A batch is padded to its own longest sequence, so a batch drawn
+            # from a contiguous window of the length-sorted buffer wastes far
+            # less compute on PAD than a uniformly scattered one. The window
+            # wraps past the end, which keeps every entry's draw probability
+            # exactly uniform -- only the batch GROUPING is biased, not the
+            # marginal over samples.
+            start = int(rng.integers(0, self.n))
+            idx = self.length_order()[(start + np.arange(bs)) % self.n]
+        else:
+            idx = rng.integers(0, self.n, size=bs)
         toks = [self.toks[i] for i in idx]
         maxlen = max(len(t) for t in toks)
         T = np.zeros((bs, maxlen), dtype=np.int64)

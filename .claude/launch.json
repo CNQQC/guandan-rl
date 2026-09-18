@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "guandan-web",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "guandan", "serve", "--port", "7860"],
+      "port": 7860,
+      "autoPort": false
+    }
+  ]
+}

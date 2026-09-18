@@ -33,14 +33,65 @@
       </div>
     </section>
     <section id="train" class="tab">
-      <div class="section-top"><div><span class="eyebrow">SELF-PLAY / 02</span><h1>与程序策略博弈学习</h1><p>强化学习模型对抗南邮、蛋饼等程序策略，并混合历史模型自我对弈。</p></div><div class="train-actions"><select id="minutes"><option value="5">5 分钟试训</option><option value="30">30 分钟训练</option></select><button class="primary" id="start-training">开始训练</button><button id="stop-training" disabled>保存并停止</button></div></div>
-      <div class="run-picker"><label>训练记录 <select id="run-picker"></select></label><span id="run-status">暂无记录</span></div>
-      <div class="metrics"><div><span>累计对局</span><strong id="metric-games">—</strong></div><div><span>训练样本</span><strong id="metric-samples">—</strong></div><div><span>更新次数</span><strong id="metric-updates">—</strong></div><div><span>运行设备</span><strong id="metric-device">—</strong></div></div>
-      <div class="chart-heading"><h2>训练损失</h2><span>损失下降不能直接证明棋力提升</span></div><div class="chart" id="chart"><p class="empty">完成一次训练后显示真实数据。</p></div>
-      <div class="training-detail"><div><h2>训练流程</h2><ol><li><span>01</span>采样完整四人对局</li><li><span>02</span>学习团队胜负与升级收益</li><li><span>03</span>保存模型、优化器和经验回放</li><li><span>04</span>同牌换队评测，与历史模型对照</li></ol></div><div><h2>继续已有训练</h2><p>在项目目录中运行；每次迭代完成后自动保存。</p><pre id="resume-command">uv run python -m guandan train --config configs/mac.toml --out runs/mac</pre><p class="muted">初始模型从零学习。公开 DanLM 权重独立保留，不会混作本地训练成果。</p></div></div>
+      <div class="section-top"><div><span class="eyebrow">SELF-PLAY / 02</span><h1>与程序策略博弈学习</h1><p>强化学习模型对抗南邮、蛋饼等程序策略，并混合历史模型自我对弈。</p></div><div class="train-actions"><label class="field-inline">基础配置 <select id="profile"></select></label><label class="field-inline">时长 <input id="max-minutes" type="number" min="0" step="1" value="30"><small>分钟</small></label><button id="toggle-setup" aria-expanded="false">训练参数</button><button class="primary" id="start-training">开始训练</button><button id="stop-training" disabled>保存并停止</button></div></div>
+      <details class="panel setup" id="train-setup">
+        <summary><b>训练参数</b><span id="setup-summary">基于 configs/league.toml</span></summary>
+        <div id="setup-fields"></div>
+        <div class="setup-row"><span class="setup-key">规则对手</span><div class="picks" id="opponent-picks"></div></div>
+        <div class="setup-row"><span class="setup-key">训练名称</span><input id="run-name" maxlength="40" placeholder="留空则按时间自动命名"></div>
+        <div class="setup-foot"><span id="setup-note">参数会写入该训练目录的 request.toml，命令行可直接复用。</span><button id="reset-setup">恢复默认值</button></div>
+        <pre id="setup-preview">—</pre>
+      </details>
+      <div class="runbar">
+        <label class="runbar-run">训练记录 <select id="run-picker"></select></label><input id="run-alias" class="alias-input" maxlength="40" placeholder="加个备注名" aria-label="训练记录备注名">
+        <button id="resume-run" class="ghost">继续训练</button><button id="bench-run" class="ghost">评测该模型</button><button id="manage-run" class="ghost" aria-haspopup="menu" aria-expanded="false">管理记录</button><span class="run-state" id="run-state"><i class="state-dot"></i><span id="run-status">暂无记录</span></span>
+        <span class="run-facts" id="run-facts">—</span>
+        <span class="run-budget"><span class="budget-track"><i id="budget-bar"></i></span><span id="budget-label">—</span></span>
+      </div>
+      <div class="run-confirm" id="run-confirm" hidden></div>
+      <div class="menu" id="run-menu" role="menu" hidden></div>
+      <div class="metrics" id="metrics"></div>
+      <div class="chart-controls">
+        <span class="eyebrow">曲线设置</span>
+        <button class="chip active" data-option="smooth" aria-pressed="true">EMA 平滑</button>
+        <button class="chip" data-option="log" aria-pressed="false">对数纵轴</button>
+        <button class="chip" data-option="table" aria-pressed="false">数据表</button>
+        <span class="action-spacer"></span>
+        <label>范围 <select id="window-size"><option value="40">最近 40 次迭代</option><option value="120">最近 120 次迭代</option><option value="0" selected>全部迭代</option></select></label>
+      </div>
+      <div class="panels">
+        <section class="panel wide"><header><h2>训练损失</h2><span>总损失 = Q + 0.02 · NTP + 0.05 · 信念；下降不能直接证明棋力提升</span></header><div class="plot" id="plot-loss"></div></section>
+        <section class="panel wide"><header><h2>开发集胜率</h2><span>每条曲线是模型对一个固定对手的胜率；同牌换队配对评测，阴影为 95% 置信区间</span></header><div class="plot" id="plot-eval"></div><div class="legend" id="legend-eval"></div></section>
+        <section class="panel"><header><h2>Q 损失</h2><span>价值回归</span></header><div class="plot small" id="plot-q"></div></section>
+        <section class="panel"><header><h2>NTP 损失</h2><span>出牌序列预测</span></header><div class="plot small" id="plot-ntp"></div></section>
+        <section class="panel"><header><h2>信念损失</h2><span>隐藏手牌估计</span></header><div class="plot small" id="plot-belief"></div></section>
+        <section class="panel"><header><h2>采样吞吐</h2><span>局 / 分钟</span></header><div class="plot small" id="plot-speed"></div></section>
+        <section class="panel full"><header><h2>对家意识</h2><span>固定一批「敌方坐庄」的局面，只把牌权归属翻成对家、手牌与历史全不变；曲线是模型因此改判让牌的比例，越高说明越会给队友让路</span></header><div class="plot small" id="plot-teamwork"></div><div class="legend" id="teamwork-note"></div></section>
+        <section class="panel full"><header><h2>模型节点</h2><span>本记录保存的每个可对战、可评测的检查点；胜率来自训练过程中的开发集评测，对手见「对手」列。</span></header><div class="node-tools"><label class="pick on"><input type="checkbox" id="keep-pool" checked>保留续训所需的对手池</label><span id="prune-note">训练时会自动清理不再使用的快照，只保留对手池和开发集对团队规则胜率最高的一个。</span><span class="action-spacer"></span><button id="prune-preview">清理旧快照</button><button id="prune-confirm" hidden>确认删除</button></div><div class="run-confirm" id="node-confirm" hidden></div><div id="nodes"><p class="empty">选择训练记录后显示。</p></div></section>
+        <section class="panel full"><header><h2>对手构成</h2><span>本次会话累计采样对局的来源</span></header><div id="mix"><p class="empty">暂无采样记录。</p></div></section>
+      </div>
+      <div class="panels-foot">
+        <section class="panel"><header><h2>训练日志</h2><span id="log-note">console.log</span></header><pre class="log-stream" id="train-log">—</pre></section>
+        <section class="panel"><header><h2>运行配置</h2><span id="config-note">config.json</span></header><dl class="config-grid" id="run-config"></dl><p class="muted">流程：采样完整四人对局 → 学习团队胜负与升级收益 → 保存模型、优化器与回放 → 同牌换队评测并与历史模型对照。每次迭代完成后自动保存，可在项目目录中继续训练。</p><pre id="resume-command">uv run python -m guandan train --config configs/mac.toml --out runs/mac</pre></section>
+      </div>
     </section>
     <section id="eval" class="tab">
-      <div class="section-top"><div><span class="EYEbrow eyebrow">EVALUATION / 03</span><h1>模型对比评测</h1><p>胜率必须和对手、样本量、规则及评测方式一起看。</p></div><span class="unverified">真人水平 · 尚未验证</span></div>
+      <div class="section-top"><div><span class="eyebrow">EVALUATION / 03</span><h1>模型对比评测</h1><p>胜率必须和对手、样本量、规则及评测方式一起看。</p></div><span class="unverified">真人水平 · 尚未验证</span></div>
+      <div class="panel eval-runner">
+        <header><h2>发起评测</h2><span>同牌换队配对：每组发一副牌打两局并交换队伍，消除牌运；结果写入 reports/ 并出现在下方列表。</span></header>
+        <div class="eval-form">
+          <label>模型 A <select id="eval-a"></select></label>
+          <label>对手 B <select id="eval-b"></select></label>
+          <label>对局组数 <input id="eval-pairs" type="number" min="1" max="2000" step="10" value="50"></label>
+          <label>随机种子 <input id="eval-seed" type="number" min="0" step="1" value="9000019"></label>
+          <label>设备 <select id="eval-device"></select></label>
+          <span class="action-spacer"></span>
+          <button class="primary" id="start-eval">开始评测</button>
+          <button id="stop-eval" disabled>终止</button>
+        </div>
+        <div class="eval-progress"><span class="budget-track"><i id="eval-bar"></i></span><span id="eval-state">未开始</span></div>
+        <pre class="log-stream" id="eval-log">选择模型与对手后开始评测，这里显示实时进度。</pre>
+      </div>
       <div class="report-list" id="report-list"><p class="empty">还没有评测报告。</p></div>
       <div class="evaluation-note"><h2>达到目标的判据</h2><p>先在保留测试牌局上稳定击败多个规则与学习型对手，再组织固定规则的真人盲测。预先登记普通玩家范围和对局数，以同牌换队胜率及置信区间判断；不能用随机对手或少量胜局替代。</p><pre>uv run python -m guandan eval --a runs/mac/latest.pt --b team-rule --pairs 500</pre></div>
     </section>

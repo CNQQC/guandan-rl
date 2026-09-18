@@ -1,10 +1,10 @@
 # Train directly against source-only competition strategies and frozen models.
 [training]
 iterations = 1000
-games_per_iteration = 12
-workers = 2
-batch_size = 32
-updates = 12
+games_per_iteration = 24
+workers = 4
+batch_size = 128
+updates = 16
 replay_size = 8192
 pool_fraction = 0.8
 rule_opponents = ["program:njupt", "program:egg-pancake", "team-rule"]
@@ -13,8 +13,11 @@ snapshot_every = 20
 eval_every = 20
 eval_pairs = 20
 max_minutes = 30
-device = "auto"
+device = "cpu"
 model_size = "small"
-threads = 2
+threads = 6
+bucket_batches = true
+pipeline = true
+save_every = 5
 seed = 17
 eval_seed = 1000003

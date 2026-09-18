@@ -11,6 +11,7 @@ import json
 import math
 import os
 import random
+import re
 import signal
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -30,6 +31,7 @@ from fabledan.ring import _belief_label
 from fabledan.train import Replay
 
 from .agents import ModelAgent, TeamRuleAgent, load_model, make_agent
+from .diagnose import PROBE_SEED, probe_states, teamwork_probe
 from .evaluate import run_evaluation
 from .runtime import RULESET, atomic_json, device_for, seed_all, system_info
 
@@ -59,11 +61,17 @@ class TrainConfig:
     model_size: str = "small"
     max_minutes: float = 30
     actor_timeout_seconds: int = 180
+    # Throughput knobs. None of them change what is learned, only how fast the
+    # same computation runs; all three are safe to flip on an existing run.
+    bucket_batches: bool = True     # draw each batch from one length bucket
+    pipeline: bool = True           # actors collect while the learner updates
+    save_every: int = 1             # iterations between full replay checkpoints
     rule_opponents: list[str] = field(default_factory=lambda: ["team-rule"])
 
     def validate(self):
         for name in ("iterations", "games_per_iteration", "workers", "batch_size", "updates",
-                     "replay_size", "pool_size", "snapshot_every", "eval_every", "eval_pairs", "threads", "actor_timeout_seconds"):
+                     "replay_size", "pool_size", "snapshot_every", "eval_every", "eval_pairs",
+                     "threads", "actor_timeout_seconds", "save_every"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be >= 1")
         if self.workers > self.games_per_iteration:
@@ -162,6 +170,31 @@ def _snapshot(path, model, iteration):
     tmp.replace(path)
 
 
+def _best_evaluated(out):
+    """Highest development win rate already on disk, on the team-rule yardstick."""
+    best, rate = None, -1.0
+    for path in out.glob("eval-*.json"):
+        if not re.fullmatch(r"eval-\d+\.json", path.name):
+            continue
+        report = json.loads(path.read_text()) if path.is_file() else {}
+        if isinstance(report.get("win_rate"), (int, float)) and report["win_rate"] > rate:
+            best, rate = report.get("iteration"), float(report["win_rate"])
+    return best, rate
+
+
+def _prune_pool(out, pool, keep_iteration=None):
+    """Snapshots outside the active opponent pool are dead weight on disk."""
+    keep = {out / name for name in pool}
+    if keep_iteration is not None:
+        keep.add(out / f"pool/iteration-{keep_iteration:06}.pt")
+    removed = 0
+    for path in (out / "pool").glob("*.pt"):
+        if path not in keep:
+            path.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 def train(cfg: TrainConfig, out, resume=None):
     cfg.validate()
     out = Path(out).resolve()
@@ -229,13 +262,47 @@ def _train_locked(cfg, out, resume):
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         old_handlers[sig] = signal.signal(sig, request_stop)
+    best_iteration, best_win = _best_evaluated(out)
+    probe = None          # fixed diagnostic states, built at the first evaluation
     start, session_games = time.monotonic(), 0
     executor = None
+
+    def build_jobs(iteration):
+        """Actor payloads for one iteration, and the epsilon they sample at."""
+        epsilon = max(cfg.epsilon_final, cfg.epsilon * math.exp(-iteration/1000))
+        state = {k: v.detach().cpu().numpy().copy() for k, v in model.state_dict().items()}
+        jobs = []
+        for worker in range(cfg.workers):
+            games = cfg.games_per_iteration // cfg.workers + (worker < cfg.games_per_iteration % cfg.workers)
+            # Half mixed games use the rule opponent; the rest use a
+            # uniformly sampled frozen checkpoint, including older ones.
+            opponent = (str(out / pool[int(rng.integers(len(pool)))]) if rng.random() < .5
+                        else str(rng.choice(cfg.rule_opponents)))
+            jobs.append((model.cfg.to_dict(), state, games,
+                         cfg.seed + iteration * 100003 + worker * 997,
+                         epsilon, cfg.pool_fraction, opponent))
+        return jobs, epsilon
+
+    def dispatch(jobs, epsilon):
+        """In-flight actor work: futures when pooled, raw payloads otherwise."""
+        return ([executor.submit(_collect, job) for job in jobs] if executor else jobs), epsilon
+
+    def gather(handles):
+        if not executor:
+            return [_collect(job) for job in handles]
+        # The timeout starts when the learner begins WAITING, so prefetched
+        # actors are not penalised for the learner step they ran under.
+        deadline = time.monotonic() + cfg.actor_timeout_seconds
+        return [future.result(timeout=max(.1, deadline-time.monotonic())) for future in handles]
+
     status = "completed"
     last_loss = None
     if cfg.workers > 1:
         executor = ProcessPoolExecutor(cfg.workers, mp_context=get_context("spawn"))
-    print(f"设备 {device} · 参数 {sum(p.numel() for p in model.parameters()):,} · {cfg.workers} 个采样进程", flush=True)
+    prefetch = cfg.pipeline and executor is not None
+    pending = None              # actor work already in flight for this iteration
+    print(f"设备 {device} · 参数 {sum(p.numel() for p in model.parameters()):,} · {cfg.workers} 个采样进程"
+          + (" · 采样与学习并行" if prefetch else ""), flush=True)
     try:
         # --iterations is the number of ADDITIONAL iterations on resume.
         target = meta["iteration"] + cfg.iterations
@@ -247,25 +314,12 @@ def _train_locked(cfg, out, resume):
                 status = "budget_reached"
                 break
             iteration = meta["iteration"] + 1
-            epsilon = max(cfg.epsilon_final, cfg.epsilon * math.exp(-iteration/1000))
-            state = {k: v.detach().cpu().numpy().copy() for k, v in model.state_dict().items()}
-            jobs = []
-            for worker in range(cfg.workers):
-                games = cfg.games_per_iteration // cfg.workers + (worker < cfg.games_per_iteration % cfg.workers)
-                # Half mixed games use the rule opponent; the rest use a
-                # uniformly sampled frozen checkpoint, including older ones.
-                opponent = (str(out / pool[int(rng.integers(len(pool)))]) if rng.random() < .5
-                            else str(rng.choice(cfg.rule_opponents)))
-                jobs.append((model.cfg.to_dict(), state, games,
-                             cfg.seed + iteration * 100003 + worker * 997,
-                             epsilon, cfg.pool_fraction, opponent))
             collect_start = time.monotonic()
-            if executor:
-                futures = [executor.submit(_collect, job) for job in jobs]
-                deadline = time.monotonic() + cfg.actor_timeout_seconds
-                batches = [future.result(timeout=max(.1, deadline-time.monotonic())) for future in futures]
-            else:
-                batches = [_collect(job) for job in jobs]
+            if pending is None:
+                pending = dispatch(*build_jobs(iteration))
+            handles, epsilon = pending
+            pending = None
+            batches = gather(handles)
             # _collect limits CPU threads; restore the learner setting.
             torch.set_num_threads(cfg.threads)
             modes = {"self": 0}
@@ -277,11 +331,19 @@ def _train_locked(cfg, out, resume):
                 session_games += games
                 for mode, count in batch_modes.items():
                     modes[mode] = modes.get(mode, 0) + count
+            # collect_seconds is time the learner spent WAITING on actors; with
+            # a pipeline it drops to zero once the actors keep ahead.
             collect_seconds = time.monotonic() - collect_start
+            # Start the next batch before updating, so the actors work through
+            # the learner step. They then sample from weights one iteration
+            # old, which is the ordinary actor-learner trade.
+            if prefetch and iteration < target and not requested_stop and not (out / "STOP").exists():
+                pending = dispatch(*build_jobs(iteration + 1))
             model.train()
             losses = []
             for _ in range(cfg.updates):
-                tokens, lengths, feats, targets, beliefs = replay.sample(cfg.batch_size, rng)
+                tokens, lengths, feats, targets, beliefs = replay.sample(
+                    cfg.batch_size, rng, cfg.bucket_batches)
                 t = torch.as_tensor(tokens, device=device)
                 lengths = torch.as_tensor(lengths, device=device)
                 f = torch.as_tensor(feats, device=device).unsqueeze(1)
@@ -316,7 +378,15 @@ def _train_locked(cfg, out, resume):
                 name = f"pool/iteration-{iteration:06}.pt"
                 _snapshot(out / name, model, iteration)
                 pool = (pool + [name])[-cfg.pool_size:]
-            _save(out / "latest.pt", model, optimizer, replay, cfg, meta, rng, pool)
+                # Keep the active opponent pool and the best-scoring snapshot only.
+                dropped = _prune_pool(out, pool, best_iteration)
+                if dropped:
+                    print(f"清理 {dropped} 个不再使用的历史快照", flush=True)
+            # The replay dominates checkpoint size, so a run may trade a few
+            # iterations of crash recovery for the write. Stops and the final
+            # exit always write a complete checkpoint below.
+            if iteration % cfg.save_every == 0:
+                _save(out / "latest.pt", model, optimizer, replay, cfg, meta, rng, pool)
             atomic_json(out / "status.json", dict(status="running", device=device, **row))
             print(f"迭代 {iteration} · {meta['games']} 局 · {meta['samples']} 样本 · loss {last_loss[0]:.4f} · {row['games_per_minute']:.1f} 局/分钟", flush=True)
             if iteration % cfg.eval_every == 0 and not requested_stop:
@@ -324,6 +394,8 @@ def _train_locked(cfg, out, resume):
                 evaluation = run_evaluation(candidate, TeamRuleAgent(), cfg.eval_pairs, cfg.eval_seed)
                 evaluation.update(iteration=iteration, opponent="team-rule", split="development")
                 atomic_json(out / f"eval-{iteration:06}.json", evaluation)
+                if evaluation["win_rate"] > best_win:
+                    best_iteration, best_win = iteration, evaluation["win_rate"]
                 for spec in cfg.rule_opponents:
                     if spec == "team-rule":
                         continue
@@ -333,6 +405,16 @@ def _train_locked(cfg, out, resume):
                     label = spec.replace(":", "-")
                     atomic_json(out / f"eval-{label}-{iteration:06}.json", opponent_result)
                     print(f"开发集对 {spec} 胜率 {opponent_result['win_rate']:.1%}", flush=True)
+                # Partner awareness on one fixed set of states: a move here is
+                # the policy changing, not the state distribution drifting.
+                if probe is None:
+                    probe = probe_states()
+                teamwork = teamwork_probe(candidate.scores, probe)
+                teamwork.update(iteration=iteration, split="development", seed=PROBE_SEED,
+                                reference=teamwork_probe(TeamRuleAgent().scores, probe))
+                atomic_json(out / f"teamwork-{iteration:06}.json", teamwork)
+                print(f"对家意识：牌权翻转后改判让牌 {teamwork['flip_rate']:.1%}"
+                      f"（团队规则参照 {teamwork['reference']['flip_rate']:.1%}）", flush=True)
                 # A candidate is promoted only after beating the current
                 # champion on paired deals with the interval above 50%.
                 best = out / "champion.pt"
@@ -353,6 +435,8 @@ def _train_locked(cfg, out, resume):
         raise
     finally:
         if executor:
+            for future in (pending[0] if pending else []):
+                future.cancel()
             if status == "failed":
                 # A failed/hung actor must not make final checkpointing hang.
                 processes = list(executor._processes.values())
